@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run modulo --verificar
+      - run: bun run demo.ts
+
+  imagen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t reto-02-periferia .
+      - name: El contenedor arranca y responde /api/health
+        run: |
+          docker run -d --name agente -p 3000:3000 reto-02-periferia
+          for intento in $(seq 1 20); do
+            if curl -fs http://127.0.0.1:3000/api/health; then exit 0; fi
+            sleep 1
+          done
+          docker logs agente
+          exit 1

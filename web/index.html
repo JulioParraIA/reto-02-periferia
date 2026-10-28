@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Registro de contratos</title>
+    <link rel="stylesheet" href="/estilos.css" />
+  </head>
+  <body data-vista="chat">
+    <header class="barra">
+      <div class="marca">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" />
+          <path d="M10 8h8l4 4v12H10z M18 8v4h4 M13 17h6 M13 21h6" />
+        </svg>
+        <div>
+          <h1>Registro de contratos</h1>
+          <p class="subtitulo">Periferia IT Group · buzón único de contratos vigentes</p>
+        </div>
+      </div>
+      <nav class="pestanas" aria-label="Vistas">
+        <button type="button" data-vista="chat" aria-pressed="true">Chat</button>
+        <button type="button" data-vista="registro" aria-pressed="false">Registro</button>
+        <button type="button" data-vista="consumo" aria-pressed="false">Consumo</button>
+      </nav>
+      <div class="acciones-barra">
+        <span id="chip-modelo" class="chip-modelo" title="Modelo que responde">conectando…</span>
+        <button id="nueva" class="boton secundario" type="button">Nueva sesión</button>
+      </div>
+    </header>
+
+    <div class="app">
+      <section class="panel panel-chat" aria-label="Conversación con el agente">
+        <div id="conversacion" class="conversacion" aria-live="polite"></div>
+        <form id="formulario" class="compositor">
+          <textarea id="mensaje" rows="1" placeholder="Escribe una instrucción, por ejemplo: procesa el buzón de contratos" aria-label="Mensaje para el agente"></textarea>
+          <button id="enviar" class="boton primario" type="submit" aria-label="Enviar mensaje">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2.5-6.5L4 12z" /></svg>
+          </button>
+        </form>
+      </section>
+
+      <aside class="panel panel-lateral" aria-label="Buzón, maestro, alertas y consumo">
+        <section id="registro" class="registro">
+          <header class="registro-cabecera">
+            <nav class="subpestanas" aria-label="Secciones del registro">
+              <button type="button" data-seccion="buzon" aria-pressed="true">Buzón <span id="cuenta-buzon" class="cuenta"></span></button>
+              <button type="button" data-seccion="maestro" aria-pressed="false">Maestro <span id="cuenta-maestro" class="cuenta"></span></button>
+              <button type="button" data-seccion="alertas" aria-pressed="false">Alertas</button>
+              <button type="button" data-seccion="historial" aria-pressed="false">Historial <span id="cuenta-historial" class="cuenta"></span></button>
+            </nav>
+            <button id="reiniciar" class="boton secundario pequeno" type="button" title="Borra out/ y deja los 6 mensajes otra vez por procesar">Reiniciar buzón</button>
+          </header>
+          <div id="registro-contenido" class="registro-contenido"></div>
+        </section>
+        <section id="consola" class="consola" aria-label="Consumo del modelo">
+          <header class="consola-cabecera">
+            <span><span class="punto"></span> consumo del modelo</span>
+            <button id="plegar-consola" type="button" aria-expanded="true" title="Plegar o desplegar">–</button>
+          </header>
+          <div id="consola-cuerpo" class="consola-cuerpo"></div>
+        </section>
+      </aside>
+    </div>
+
+    <div id="acceso" class="modal" hidden>
+      <form class="modal-caja pequena" id="form-acceso">
+        <h2>Enlace protegido</h2>
+        <p>Escribe la clave de acceso que viene en el README.</p>
+        <input id="clave" type="password" autocomplete="current-password" required aria-label="Clave de acceso" />
+        <button class="boton primario" type="submit">Entrar</button>
+        <p id="error-acceso" class="texto-error" hidden>La clave no es correcta.</p>
+      </form>
+    </div>
+
+    <div id="confirmar-reinicio" class="modal" hidden>
+      <div class="modal-caja pequena" role="dialog" aria-modal="true" aria-labelledby="reinicio-titulo">
+        <h2 id="reinicio-titulo">¿Reiniciar el buzón?</h2>
+        <p>Se borra todo lo que el agente escribió en <code>out/</code>: el maestro vuelve al congelado del 2026-05-30 y los 6 mensajes quedan otra vez por procesar. Los fixtures no se tocan.</p>
+        <div class="fila">
+          <button id="reinicio-si" class="boton primario" type="button">Reiniciar</button>
+          <button id="reinicio-no" class="boton secundario" type="button">Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="visor" class="modal" hidden>
+      <div class="modal-caja grande" role="dialog" aria-modal="true" aria-labelledby="visor-titulo">
+        <header class="modal-cabecera">
+          <h2 id="visor-titulo">Vista previa</h2>
+          <div class="fila">
+            <button id="visor-cerrar" class="boton secundario" type="button" aria-label="Cerrar">✕</button>
+          </div>
+        </header>
+        <div id="visor-contenido" class="visor-contenido"></div>
+      </div>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

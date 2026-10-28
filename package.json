@@ -1,0 +1,23 @@
+{
+  "name": "reto-02-periferia",
+  "version": "1.0.0",
+  "description": "Agente conversacional para el registro de contratos vigentes de Periferia IT Group desde un buzón único",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "demo": "bun demo.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "modulo": "bun scripts/modulo.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/node": "26.6.3",
+    "typescript": "7.0.2"
+  }
+}

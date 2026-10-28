@@ -1,0 +1,20 @@
+# Blueprint de Render: New → Blueprint → elegir este repositorio.
+# Render pide al crear el servicio los valores marcados con sync: false.
+services:
+  - type: web
+    name: reto-02-periferia
+    runtime: docker
+    plan: free
+    region: virginia
+    healthCheckPath: /api/health
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: CLAVE_ACCESO
+        sync: false
+      - key: LLM_MODELO
+        value: anthropic/claude-sonnet-5.5
+      - key: MAX_ITERACIONES
+        value: "25"
+      - key: MAX_TOKENS_SESION
+        value: "400000"
