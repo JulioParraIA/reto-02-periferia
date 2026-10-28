@@ -15,7 +15,7 @@ La interfaz tiene tres partes:
 - **Consola de consumo**, en fondo negro, con el modelo que respondió y, por cada interacción, los tokens y los dólares de entrada y de salida.
 
 - **Link de prueba:** https://reto-02-periferia.onrender.com
-- **Clave de acceso al link y `.env` para correrlo en local:** se entregan aparte, por correo.
+- **Clave de acceso al link:** se entrega aparte, por correo. Para correrlo en local, copia `.env.example` como `.env` y escribe una clave propia de OpenRouter (ver «Levantar en local»).
 - **Planteamiento de la solución:** [SOLUCION.md](SOLUCION.md).
 
 ## Levantar en local
