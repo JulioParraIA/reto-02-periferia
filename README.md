@@ -14,7 +14,8 @@ La interfaz tiene tres partes:
   «Reiniciar buzón» deja todo como al principio para repetir la demo.
 - **Consola de consumo**, en fondo negro, con el modelo que respondió y, por cada interacción, los tokens y los dólares de entrada y de salida.
 
-- **Link de prueba:** pendiente de publicar.
+- **Link de prueba:** https://reto-02-periferia.onrender.com
+- **Clave de acceso al link y `.env` para correrlo en local:** se entregan aparte, por correo.
 - **Planteamiento de la solución:** [SOLUCION.md](SOLUCION.md).
 
 ## Levantar en local

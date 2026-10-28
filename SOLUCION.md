@@ -101,6 +101,8 @@ Se eligió Claude Sonnet 5.5 porque aquí el modelo orquesta: decide el orden de
 | Solo `msg-005` (rechazo) | 1 | 5,1 s | 28.843 | 20.777 | USD 0,025 |
 | Solo `msg-006` (revisión y confirmación) | 2 | 17,5 s | 73.062 | 57.035 | USD 0,063 |
 
+En el link público de Render, la demo completa del PRD dio el mismo resultado en 39,3 s y costó USD 0,157.
+
 Procesado en lote, un mensaje cuesta unos **USD 0,025**: los USD 0,149 de la demo completa entre seis mensajes. Procesado suelto cuesta entre USD 0,025 y 0,063, porque cada sesión vuelve a pagar el prompt y la lectura del buzón. El PRD no dice cuántos contratos llegan al mes; con el costo en lote, el modelo cuesta unos USD 2,50 por cada 100 contratos procesados. La caché explica la mayor parte del ahorro: en la demo, 156.136 de los 191.605 tokens salieron de ella, al 10 % del precio.
 
 ## 5. Estrategia de extracción
