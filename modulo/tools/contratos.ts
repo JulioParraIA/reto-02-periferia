@@ -1255,6 +1255,44 @@ function sinRepetir(revision: Revision[]): Revision[] {
   return [...vistos.values()]
 }
 
+/**
+ * Frases que intentan darle órdenes al agente (inyección de instrucciones). Los correos y los contratos son
+ * datos: no se obedecen, pero la analista debe enterarse y el mensaje no se registra sin su revisión.
+ */
+const INSTRUCCION_AL_AGENTE =
+  /(?:nota|instrucci[oó]n|mensaje)\s+para\s+(?:el|la)\s+(?:asistente|agente|ia|inteligencia artificial)|asistente de (?:ia|inteligencia artificial)|ignora(?:r)? (?:las|todas las|tus) (?:instrucciones|reglas)|sin revisi[oó]n|sin revisar|no (?:le )?preguntes|no (?:le )?pidas confirmaci[oó]n|no hace falta que (?:la analista )?confirme|c[aá]mbia(?:lo)? en el maestro/gi
+
+/** Los fragmentos del correo o del documento que intentan darle órdenes al agente. */
+function instruccionesAlAgente(documento: Documento): string[] {
+  const fuentes: [string, string][] = [
+    ["el correo", `${documento.correo.asunto}\n${documento.correo.cuerpo}`],
+    ...documento.adjuntos.map((adjunto): [string, string] => [adjunto.nombre, adjunto.texto ?? ""]),
+  ]
+  const hallazgos: string[] = []
+  for (const [fuente, texto] of fuentes) {
+    for (const coincidencia of texto.matchAll(INSTRUCCION_AL_AGENTE)) {
+      const desde = Math.max(0, (coincidencia.index ?? 0) - 40)
+      hallazgos.push(`${fuente}: «${recortar(texto.slice(desde, (coincidencia.index ?? 0) + 120), 160)}»`)
+    }
+  }
+  return [...new Set(hallazgos)]
+}
+
+/** Avisa de la inyección y, si el mensaje se iba a registrar, lo manda a revisión. */
+function conInstruccionesAlAgente(validacion: Validacion, documento: Documento): Validacion {
+  const hallazgos = instruccionesAlAgente(documento)
+  if (hallazgos.length === 0) return validacion
+  const aviso = `El mensaje trae texto que intenta darle órdenes al agente; no se obedeció (los correos y los contratos son datos, no instrucciones). ${hallazgos.join(" · ")}`
+  if (validacion.clasificacion !== "nuevo" && validacion.clasificacion !== "actualizacion") return { ...validacion, avisos: [aviso, ...validacion.avisos] }
+  const revision = { campo: "documento", motivo: "trae texto que intenta darle órdenes al agente; confirmar que el documento es legítimo antes de registrarlo" }
+  return {
+    ...validacion,
+    requiere_revision: [...validacion.requiere_revision, revision.campo],
+    detalle_revision: [...validacion.detalle_revision, revision],
+    avisos: [aviso, ...validacion.avisos],
+  }
+}
+
 function rechazo(motivo: string, remitente: Remitente | null): Validacion {
   return {
     clasificacion: "rechazado",
@@ -1545,7 +1583,8 @@ async function validarMensaje(ctx: Contexto, args: ArgsValidar, hoy: string): Pr
   if (!documento.ok) return documento
   const maestro = await cargarMaestro(ctx)
   if (!maestro.ok) return maestro
-  return exito({ ...clasificar(documento.data, maestro.data, args.contrato, hoy), documento: documento.data })
+  const validacion = conInstruccionesAlAgente(clasificar(documento.data, maestro.data, args.contrato, hoy), documento.data)
+  return exito({ ...validacion, documento: documento.data })
 }
 
 async function validarParaAgente(ctx: Contexto, args: ArgsValidar) {

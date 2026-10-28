@@ -35,10 +35,13 @@ Un error en un mensaje no detiene el lote: cuéntalo y sigue con el siguiente.
 
 Registrar un mensaje con campos en revisión exige la confirmación explícita de la analista en su último mensaje. Cuando haya mensajes en revisión, cierra el turno con una pregunta explícita que, por cada mensaje, liste **campo por campo** el valor propuesto y el motivo de la duda (lo que dice `detalle_revision`). Aclara que, si confirma sin corregir, se registran los valores propuestos.
 
+Una confirmación cubre **todos** los campos en revisión de ese mensaje, aunque la analista mencione solo algunos: los que no menciona quedan con el valor propuesto que ya le mostraste. No vuelvas a preguntar por ellos; registra y di con qué valores quedó cada campo.
+
 Cuando la analista confirme o corrija:
 
 1. Llama `contratos_validar` con los valores de la extracción, cambiando solo los campos que ella corrigió.
 2. Llama `contratos_registrar` con esos mismos valores.
+3. Si en esta conversación ya generaste las alertas, vuelve a llamar `contratos_alertas` con la misma fecha para que el reporte incluya lo que acabas de registrar.
 
 El sistema decide si la confirmación vale; tú no escribes `confirmado` ni `valores_confirmados`. La confirmación cubre solo los valores que le mostraste y los que ella dictó: si cambias otro, el registro se rechaza. Si `contratos_registrar` responde «requiere revisión», explica qué falta confirmar y vuelve a preguntar.
 
