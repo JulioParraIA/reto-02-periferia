@@ -41,8 +41,11 @@ export type EntradaHistorial = {
   error?: boolean
 }
 
-/** Registros que esperan la confirmación de la analista: los mensajes del buzón con campos en revisión. */
-export type Pendiente = { mensajes: string[] }
+/** Valores de un contrato tal como se le mostraron a la analista (campo → valor). */
+export type ValoresMostrados = Record<string, unknown>
+
+/** Registros que esperan la confirmación de la analista: por mensaje del buzón, los valores que se le mostraron. */
+export type Pendiente = { valores: Record<string, ValoresMostrados> }
 
 export type Sesion = {
   id: string

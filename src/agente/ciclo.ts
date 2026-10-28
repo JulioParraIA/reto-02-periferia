@@ -7,9 +7,9 @@
  * Además suma el consumo del modelo de cada turno (tokens y dólares de entrada y de salida).
  */
 import { ErrorLLM, type AdaptadorLLM, type LlamadaHerramienta, type OpcionesEnvio, type RespuestaModelo } from "../llm/adapter.ts"
-import { esAfirmativo } from "./confirmacion.ts"
+import { cambiosNoDictados, esAfirmativo } from "./confirmacion.ts"
 import { ejecutarHerramienta, type Herramienta, type ResultadoHerramienta } from "./herramientas.ts"
-import type { ConsumoTurno, LlamadaVisible, ResultadoTurno, Sesion } from "./tipos.ts"
+import type { ConsumoTurno, LlamadaVisible, ResultadoTurno, Sesion, ValoresMostrados } from "./tipos.ts"
 
 export type DependenciasCiclo = {
   llm: AdaptadorLLM
@@ -25,10 +25,12 @@ const SIN_TEXTO = "El modelo no devolvió texto; intenta de nuevo."
 
 type EstadoTurno = {
   llamadas: LlamadaVisible[]
-  /** Mensajes que el usuario confirmó en este mensaje; cada uno se gasta al registrarse. */
-  otorgada: Set<string>
-  /** Mensajes que quedan esperando confirmación al terminar el turno. */
-  pendiente: Set<string>
+  /** Lo que escribió el usuario en este turno: las correcciones solo valen si las dictó aquí. */
+  mensajeUsuario: string
+  /** Mensajes del buzón que el usuario confirmó, con los valores que aprobó; cada uno se gasta al registrarse. */
+  otorgada: Map<string, ValoresMostrados>
+  /** Mensajes que quedan esperando confirmación al terminar el turno, con los valores que se le mostraron. */
+  pendiente: Map<string, ValoresMostrados>
   inicio: number
   consumo: ConsumoTurno
 }
@@ -50,15 +52,27 @@ function leerArgumentos(texto: string): unknown {
   }
 }
 
-/** `confirmado` solo es true si el usuario confirmó este mensaje en su último mensaje; el modelo no lo decide. */
-function fijarConfirmacion(argumentos: unknown, otorgada: Set<string>): unknown {
+/**
+ * `confirmado` y `valores_confirmados` los fija el backend, nunca el modelo: `confirmado` solo es true si el
+ * usuario confirmó este mensaje, y la herramienta solo registra si escribe exactamente los valores aprobados.
+ */
+function fijarConfirmacion(argumentos: unknown, turno: EstadoTurno): unknown {
   if (!esObjeto(argumentos)) return argumentos
   const mensaje = mensajeDe(argumentos)
-  return { ...argumentos, confirmado: mensaje !== null && otorgada.has(mensaje) }
+  const aprobados = mensaje === null ? undefined : turno.otorgada.get(mensaje)
+  const { valores_confirmados: _ignorado, ...resto } = argumentos
+  if (!aprobados) return { ...resto, confirmado: false }
+  // Si el modelo registra directamente con correcciones, se aprueban solo si el usuario las dictó.
+  const propuestos = esObjeto(resto.contrato) ? { ...aprobados, ...resto.contrato } : aprobados
+  const valores = cambiosNoDictados(aprobados, propuestos, turno.mensajeUsuario).length === 0 ? propuestos : aprobados
+  return { ...resto, confirmado: true, valores_confirmados: valores }
 }
 
-function anunciaConfirmacion(datos: unknown): boolean {
-  return esObjeto(datos) && esObjeto(datos.confirmacion_pendiente)
+/** Los valores que una validación le muestra a la analista, si dejó el mensaje en revisión. */
+function valoresAnunciados(datos: unknown): ValoresMostrados | null {
+  if (!esObjeto(datos) || !esObjeto(datos.confirmacion_pendiente)) return null
+  const { valores } = datos.confirmacion_pendiente
+  return esObjeto(valores) ? valores : {}
 }
 
 function actualizarConfirmacion(turno: EstadoTurno, herramienta: Herramienta | undefined, argumentos: unknown, resultado: ResultadoHerramienta): void {
@@ -69,7 +83,16 @@ function actualizarConfirmacion(turno: EstadoTurno, herramienta: Herramienta | u
     turno.pendiente.delete(mensaje)
     return
   }
-  if (resultado.error?.startsWith(ERROR_REVISION) || anunciaConfirmacion(resultado.datos)) turno.pendiente.add(mensaje)
+  const anunciados = valoresAnunciados(resultado.datos)
+  if (anunciados) {
+    // Al validar otra vez en el turno que confirma, solo siguen aprobados los cambios que el usuario dictó.
+    const aprobados = turno.otorgada.get(mensaje)
+    if (aprobados && cambiosNoDictados(aprobados, anunciados, turno.mensajeUsuario).length === 0) turno.otorgada.set(mensaje, anunciados)
+    else turno.otorgada.delete(mensaje)
+    turno.pendiente.set(mensaje, anunciados)
+    return
+  }
+  if (resultado.error?.startsWith(ERROR_REVISION) && !turno.pendiente.has(mensaje)) turno.pendiente.set(mensaje, turno.otorgada.get(mensaje) ?? {})
 }
 
 // ─── Consumo ─────────────────────────────────────────────────────────────────
@@ -123,7 +146,7 @@ async function pedirAlModelo(sesion: Sesion, turno: EstadoTurno, deps: Dependenc
 async function atenderLlamada(sesion: Sesion, turno: EstadoTurno, llamada: LlamadaHerramienta, deps: DependenciasCiclo): Promise<void> {
   const herramienta = deps.herramientas.find((candidata) => candidata.nombre === llamada.nombre)
   const leidos = leerArgumentos(llamada.argumentos)
-  const argumentos = herramienta?.controlaConfirmacion ? fijarConfirmacion(leidos, turno.otorgada) : leidos
+  const argumentos = herramienta?.controlaConfirmacion ? fijarConfirmacion(leidos, turno) : leidos
   const ctx = { directory: deps.directorio, sessionId: sesion.id }
   const resultado = await ejecutarHerramienta(deps.herramientas, llamada.nombre, argumentos, ctx)
   actualizarConfirmacion(turno, herramienta, argumentos, resultado)
@@ -170,7 +193,7 @@ async function iterar(sesion: Sesion, turno: EstadoTurno, deps: DependenciasCicl
 }
 
 function cerrar(sesion: Sesion, turno: EstadoTurno, texto: string, error: boolean): ResultadoTurno {
-  sesion.pendiente = turno.pendiente.size > 0 ? { mensajes: [...turno.pendiente] } : null
+  sesion.pendiente = turno.pendiente.size > 0 ? { valores: Object.fromEntries(turno.pendiente) } : null
   const needsConfirmation = sesion.pendiente !== null
   const consumo = { ...turno.consumo, duracionMs: Date.now() - turno.inicio }
   const marca = error ? { error: true } : {}
@@ -181,8 +204,9 @@ function cerrar(sesion: Sesion, turno: EstadoTurno, texto: string, error: boolea
 export async function procesarTurno(sesion: Sesion, mensaje: string, confirmar: boolean, deps: DependenciasCiclo): Promise<ResultadoTurno> {
   const turno: EstadoTurno = {
     llamadas: [],
-    otorgada: new Set(sesion.pendiente && (confirmar || esAfirmativo(mensaje)) ? sesion.pendiente.mensajes : []),
-    pendiente: new Set(),
+    mensajeUsuario: mensaje,
+    otorgada: new Map(sesion.pendiente && (confirmar || esAfirmativo(mensaje)) ? Object.entries(sesion.pendiente.valores) : []),
+    pendiente: new Map(),
     inicio: Date.now(),
     consumo: consumoVacio(deps.llm.modelo),
   }

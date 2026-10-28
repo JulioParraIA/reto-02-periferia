@@ -95,7 +95,8 @@ describe("confirmación humana (CA3 y RN5)", () => {
     // Tres llamadas al modelo (dos con herramientas y la pregunta final), sumadas en el consumo del turno.
     expect(primero.consumo).toMatchObject({ llamadas: 3, entrada: { tokens: 300, enCache: 120, escritosEnCache: 30 }, salida: { tokens: 60, razonamiento: 15 } })
     expect(primero.consumo.totalUsd).toBeCloseTo(0.0018)
-    expect(sesion.pendiente).toEqual({ mensajes: ["msg-006"] })
+    expect(Object.keys(sesion.pendiente?.valores ?? {})).toEqual(["msg-006"])
+    expect(sesion.pendiente?.valores["msg-006"]).toMatchObject({ valor: 0, fecha_fin: "2027-07-31" })
 
     // El modelo manda confirmado: false por descuido: el backend lo fija en true porque la analista confirmó.
     const segundo = await turno(
@@ -109,6 +110,31 @@ describe("confirmación humana (CA3 y RN5)", () => {
     expect(segundo.toolCalls[1]).toMatchObject({ herramienta: "contratos_registrar", ok: true, argumentos: { confirmado: true } })
     expect(segundo.needsConfirmation).toBe(false)
     expect(await registrado("CM-2026-03")).toBe(true)
+  })
+
+  test("confirmar no autoriza un valor que la analista no dictó ni vio", async () => {
+    await turno("Procesa msg-006", new ModeloDeGuion(revisarMsg006()))
+    const conOtraFecha = (anterior: string) => ({ mensaje_id: "msg-006", contrato: { ...datos(anterior, ExtraccionSchema).valores, fecha_fin: "2028-12-31" } })
+    const intento = await turno("Confirmo", new ModeloDeGuion([llamar("contratos_extraer", { mensaje_id: "msg-006" }), llamarCon("contratos_registrar", conOtraFecha), decir("…")]))
+    expect(intento.toolCalls[1]).toMatchObject({ herramienta: "contratos_registrar", ok: false, argumentos: { confirmado: true } })
+    expect(intento.toolCalls[1]?.resumen).toContain("no tiene el valor que confirmó la analista")
+    expect(await registrado("CM-2026-03")).toBe(false)
+  })
+
+  test("validar otra vez con un cambio no dictado anula la confirmación", async () => {
+    await turno("Procesa msg-006", new ModeloDeGuion(revisarMsg006()))
+    const cambiado = (anterior: string) => ({ mensaje_id: "msg-006", contrato: { ...datos(anterior, ExtraccionSchema).valores, valor: 999 } })
+    const resultado = await turno(
+      "Sí, confirmo",
+      new ModeloDeGuion([
+        llamar("contratos_extraer", { mensaje_id: "msg-006" }),
+        llamarCon("contratos_validar", cambiado),
+        llamar("contratos_registrar", { mensaje_id: "msg-006", contrato: { valor: 999 } }),
+        decir("…"),
+      ]),
+    )
+    expect(resultado.toolCalls[2]).toMatchObject({ ok: false, argumentos: { confirmado: false } })
+    expect(resultado.needsConfirmation).toBe(true)
   })
 
   test("el modelo no puede confirmar por la analista", async () => {

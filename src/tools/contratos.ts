@@ -136,7 +136,7 @@ type Extraccion = {
   archivo: string
   tipo_documento: TipoDocumento
   /** Solo en un otrosí: su número, los campos que modifica y si obliga a ampliar las pólizas. */
-  otrosi: { numero: string | null; modifica: NombreCampo[]; amplia_polizas: boolean } | null
+  otrosi: { numero: string | null; modifica: NombreCampo[]; amplia_polizas: boolean; adiciona_valor: boolean } | null
   campos: Campos
   remitente: Remitente
 }
@@ -154,6 +154,8 @@ type Validacion = {
   diferencias: Diferencia[]
   /** La fila tal como quedaría en el maestro (null si no se escribe nada). */
   registro: Fila | null
+  /** Los valores con los que se validó: los del documento con las correcciones del chat (null si se rechaza). */
+  valores: Valores | null
   comercial: Remitente | null
   avisos: string[]
 }
@@ -255,18 +257,32 @@ function diasEntre(desde: string, hasta: string): number {
 
 type FechaEnTexto = { fecha: string; indice: number; texto: string }
 
-/** Fechas escritas como «quince (15) de agosto de 2026» o «15 de agosto de 2026». */
+/**
+ * Fechas escritas como «quince (15) de agosto de 2026», «15 de agosto de 2026», «1° de agosto de 2026»,
+ * «primero de agosto de 2026» o «15/08/2026» (día/mes/año, como se escribe en Colombia).
+ */
 function fechasEn(texto: string): FechaEnTexto[] {
-  const patron = new RegExp(`(\\d{1,2})\\)?\\s+(?:d[ií]as\\s+del\\s+mes\\s+)?de\\s+(${PATRON_MES})\\s+(?:de|del)\\s+(\\d{4})`, "gi")
+  const enLetras = new RegExp(`(\\d{1,2}|primero)\\s*[°º]?\\)?\\s+(?:d[ií]as\\s+del\\s+mes\\s+)?de\\s+(${PATRON_MES})\\s+(?:de|del)\\s+(\\d{4})`, "gi")
   const fechas: FechaEnTexto[] = []
-  for (const coincidencia of texto.matchAll(patron)) {
+  for (const coincidencia of texto.matchAll(enLetras)) {
     const [completo, dia, mes, anio] = coincidencia
     const numeroMes = MESES[normalizar(mes ?? "")]
     if (!numeroMes || !dia || !anio) continue
-    const fecha = iso(Number(anio), numeroMes, Number(dia))
+    const fecha = iso(Number(anio), numeroMes, normalizar(dia) === "primero" ? 1 : Number(dia))
     if (fechaValida(fecha)) fechas.push({ fecha, indice: coincidencia.index ?? 0, texto: completo })
   }
-  return fechas
+  for (const coincidencia of texto.matchAll(new RegExp(`\\b(${PATRON_MES})\\s+(\\d{1,2})\\s*,?\\s+(?:de|del)\\s+(\\d{4})`, "gi"))) {
+    const [completo, mes, dia, anio] = coincidencia
+    const numeroMes = MESES[normalizar(mes ?? "")]
+    const fecha = numeroMes ? iso(Number(anio), numeroMes, Number(dia)) : ""
+    if (fechaValida(fecha)) fechas.push({ fecha, indice: coincidencia.index ?? 0, texto: completo })
+  }
+  for (const coincidencia of texto.matchAll(/\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/g)) {
+    const [completo, dia, mes, anio] = coincidencia
+    const fecha = iso(Number(anio), Number(mes), Number(dia))
+    if (fechaValida(fecha)) fechas.push({ fecha, indice: coincidencia.index ?? 0, texto: completo })
+  }
+  return fechas.sort((a, b) => a.indice - b.indice)
 }
 
 /** La primera fecha que aparece después de la palabra dada (por ejemplo «desde» o «hasta»). */
@@ -403,9 +419,9 @@ function leerCifra(texto: string): number | null {
 const ORDINALES = "PRIMERA|SEGUNDA|TERCERA|CUARTA|QUINTA|SEXTA|S[ÉE]PTIMA|OCTAVA|NOVENA|D[ÉE]CIMA"
 type Clausula = { titulo: string; texto: string }
 
-/** Cláusulas «PRIMERA. OBJETO. …»; las de un otrosí no tienen título y quedan con título vacío. */
+/** Cláusulas «PRIMERA. OBJETO. …» o «CLÁUSULA PRIMERA - OBJETO: …»; las de un otrosí no tienen título y quedan con título vacío. */
 function clausulas(texto: string): Clausula[] {
-  const patron = new RegExp(`^(?:${ORDINALES})\\.\\s*(?:([A-ZÁÉÍÓÚÑ ]{3,40})\\.\\s*)?(.+)$`, "u")
+  const patron = new RegExp(`^(?:CL[ÁA]USULA\\s+)?(?:${ORDINALES})\\s*[.:\\-–]\\s*(?:([A-ZÁÉÍÓÚÑ ]{3,40}?)\\s*[.:\\-–]\\s*)?(.+)$`, "u")
   return texto
     .split(/\n\s*\n/)
     .map((parrafo) => parrafo.replace(/\s+/g, " ").trim().match(patron))
@@ -428,7 +444,7 @@ function modificacionDe(lista: Clausula[], nombre: RegExp): string | null {
 
 function tipoDeDocumento(texto: string): TipoDocumento | null {
   const titulo = normalizar(texto.split("\n").find((linea) => linea.trim()) ?? "")
-  if (titulo.startsWith("otrosi")) return "otrosi"
+  if (/^(otrosi|modificacion|adicion|prorroga|enmienda)\b/.test(titulo)) return "otrosi"
   if (titulo.startsWith("contrato marco")) return "contrato_marco"
   if (titulo.startsWith("contrato")) return "contrato"
   return null
@@ -436,20 +452,24 @@ function tipoDeDocumento(texto: string): TipoDocumento | null {
 
 type Parte = { nombre: string; tipo: string; numero: string; indice: number }
 
-/** Partes del encabezado: «INDUSTRIAS DELTA S.A.S., identificada con NIT 890.900.111-4». */
+/**
+ * Partes del encabezado: «INDUSTRIAS DELTA S.A.S., identificada con NIT 890.900.111-4». Acepta «NIT.»,
+ * «N.I.T.», «RUC No.» y razones sociales con minúsculas; quita el «Entre» que puede quedar pegado.
+ */
 function partesDe(texto: string): Parte[] {
-  const patron = /([A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑ0-9 .&-]+?),\s+(?:identificad[ao] con\s+)?(NIT|RUC|RTN)\s+([\d][\d.\- ]*\d)/g
-  return [...texto.matchAll(patron)].map((coincidencia) => ({
-    nombre: (coincidencia[1] ?? "").trim(),
-    tipo: coincidencia[2] ?? "",
+  // Sin la bandera «i»: el nombre debe empezar en mayúscula; la sigla acepta «NIT», «Nit» o «N.I.T.».
+  const patron = /([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ0-9 .&-]+?),\s+(?:identificad[ao]s? con\s+(?:el\s+)?)?([Nn]\.?[Ii]\.?[Tt]\.?|[Rr]\.?[Uu]\.?[Cc]\.?|[Rr]\.?[Tt]\.?[Nn]\.?)\s*(?:No\.?\s*)?(\d[\d.\- ]*\d)/g
+  return [...texto.replace(/,\s+(?:sociedad|empresa|entidad|persona jur[ií]dica)\s+(?=identificad)/g, ", ").matchAll(patron)].map((coincidencia) => ({
+    nombre: (coincidencia[1] ?? "").trim().replace(/^(?:entre(?: los suscritos)?|y)\s+/i, ""),
+    tipo: (coincidencia[2] ?? "").replace(/\./g, "").toUpperCase(),
     numero: (coincidencia[3] ?? "").trim(),
     indice: coincidencia.index ?? 0,
   }))
 }
 
-/** NIT sin puntos ni dígito de verificación; RUC y RTN, solo los dígitos. */
+/** NIT sin puntos ni dígito de verificación; RUC de Panamá («155612345-2-2021»), solo el primer tramo; el resto, solo los dígitos. */
 function limpiarIdentificador(tipo: string, numero: string): string {
-  if (tipo === "NIT") return (numero.split("-")[0] ?? numero).replace(/\D/g, "")
+  if (tipo === "NIT" || (tipo === "RUC" && /\d-\d+-\d/.test(numero))) return (numero.split("-")[0] ?? numero).replace(/\D/g, "")
   return numero.replace(/\D/g, "")
 }
 
@@ -541,7 +561,9 @@ function campo<T>(valor: T, confianza: number, evidencia: string | null, nota?: 
 
 function extraerId(texto: string, tipo: TipoDocumento, correo: Correo): Campo<string> {
   const titulo = texto.split("\n").find((linea) => linea.trim()) ?? ""
-  const numeros = [...titulo.matchAll(/No\.\s*([A-Z0-9][A-Z0-9-]*[A-Z0-9])/g)].map((coincidencia) => coincidencia[1] ?? "")
+  const numeros = [...titulo.matchAll(/(?:No\.?|N[°º]\.?|Nro\.?|N[uú]mero)\s*([A-Z0-9](?:[A-Z0-9-]| (?=\d))*[A-Z0-9])/gi)].map((coincidencia) =>
+    (coincidencia[1] ?? "").toUpperCase().replace(/ /g, "-"),
+  )
   // En un otrosí el primer número es el del otrosí y el segundo el del contrato que modifica.
   const id = tipo === "otrosi" ? (numeros.find((numero) => /[A-Z]/.test(numero)) ?? null) : (numeros[0] ?? null)
   if (!id) return vacio("el documento no trae número de contrato; al registrarlo se asigna AUTO-<año>-<secuencia>")
@@ -560,8 +582,19 @@ function extraerContraparte(texto: string): Contraparte {
   const evidencia = `${parte.nombre}, ${parte.tipo} ${parte.numero}`
   const rol = normalizar(texto.slice(parte.indice, parte.indice + 400)).match(/el (contratante|contratista)/)?.[1]
   const enFirmas = nombreEnFirmas(texto, parte.nombre)
-  const cliente = campo(enFirmas ?? tipoTitulo(parte.nombre), rol === "contratante" ? (enFirmas ? 0.97 : 0.9) : 0.82, evidencia)
-  const nit = campo(limpiarIdentificador(parte.tipo, parte.numero), 0.97, evidencia)
+  let cliente = campo(enFirmas ?? tipoTitulo(parte.nombre), rol === "contratante" ? (enFirmas ? 0.97 : 0.9) : 0.82, evidencia)
+  let nit = campo(limpiarIdentificador(parte.tipo, parte.numero), 0.97, evidencia)
+  if (rol === "contratista") {
+    const nota = "Periferia figura como CONTRATANTE: la contraparte es un proveedor, no un cliente; confirmar si este contrato va en el maestro"
+    cliente = campo(cliente.valor ?? "", 0.3, evidencia, nota)
+  }
+  // Un consorcio o una unión temporal es el cliente; si no trae NIT propio, se propone el de su primera integrante.
+  const consorcio = texto.slice(0, parte.indice).match(/(CONSORCIO|UNI[ÓO]N TEMPORAL)\s+([^,]+),\s+(?:integrad|conformad)[oa]s?\s+por/i)
+  if (consorcio) {
+    const nombre = `${consorcio[1]} ${consorcio[2]}`.trim()
+    cliente = campo(nombreEnFirmas(texto, nombre) ?? tipoTitulo(nombre), 0.75, consorcio[0], "consorcio o unión temporal: se registra el consorcio como cliente; confirmar")
+    nit = campo(nit.valor ?? "", 0.5, evidencia, "el consorcio no trae NIT propio; se propone el de su primera integrante, confirmar")
+  }
   const porIdentificador = paisPorIdentificador(parte.tipo, parte.numero)
   const porDomicilio = paisPorDomicilio(texto, parte.indice)
   let pais: Campo<Pais>
@@ -597,11 +630,22 @@ function extraerObjeto(lista: Clausula[]): Campo<string> {
 
 type Valor = { valor: Campo<number>; indeterminado: Campo<boolean>; moneda: Campo<Moneda> }
 
-function monedaEnCifra(texto: string): { moneda: Moneda | null; cifra: number | null; evidencia: string } | null {
-  const coincidencia = texto.match(/\(\s*(COP|USD|US\$|PEN|PAB|HNL)?\s*\$?\s*([\d][\d.,]*)\s*\)/i)
+/** La cifra entre paréntesis («(COP $265.000.000)») o, si no hay, la primera con código o signo de pesos («$ 1.250.000.000»). */
+function monedaEnCifra(texto: string): { moneda: Moneda | null; cifra: number | null; evidencia: string; signo: boolean } | null {
+  const entreParentesis = texto.match(/\(\s*(COP|USD|US\$|PEN|PAB|HNL)?\s*(\$)?\s*(\d[\d.,]*)\s*\)/i)
+  const suelta = texto.match(/(COP|USD|US\$|PEN|PAB|HNL)?\s*(\$)?\s*(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?)/i)
+  const coincidencia = entreParentesis ?? (suelta && (suelta[1] || suelta[2]) ? suelta : null)
   if (!coincidencia) return null
-  return { moneda: CODIGOS_MONEDA[(coincidencia[1] ?? "").toLowerCase()] ?? null, cifra: leerCifra(coincidencia[2] ?? ""), evidencia: coincidencia[0] }
+  const moneda = CODIGOS_MONEDA[(coincidencia[1] ?? "").toLowerCase()] ?? null
+  return { moneda, cifra: leerCifra(coincidencia[3] ?? ""), evidencia: coincidencia[0], signo: !coincidencia[1] && Boolean(coincidencia[2]) }
 }
+
+/** Un valor por mes no es el valor total del contrato. */
+const VALOR_PERIODICO = /valor mensual|mensualmente la suma|por mes\b|cada mes|mensualidades?/
+const NOTA_PERIODICO = "es un valor mensual, no el total"
+
+/** Un valor que es un tope o se liquida por consumo no es el valor fijo del contrato. */
+const VALOR_VARIABLE = /hasta (?:un|por un)?\s*(?:tope|monto|valor)|tope (?:maximo )?de|bolsa de horas|se liquidara|segun (?:las )?(?:horas|tarifas|consumo)|por consumo/
 
 function monedaEnLetras(texto: string, pais: Pais | null): Moneda | null {
   const normal = normalizar(texto)
@@ -642,10 +686,9 @@ function extraerValor(textoValor: string | null, documento: string, pais: Pais |
   const monedaLetras = monedaEnLetras(texto.split("(")[0] ?? texto, pais)
   let valor: Campo<number>
   if (cifra?.cifra !== null && cifra?.cifra !== undefined && letras !== null) {
-    valor =
-      cifra.cifra === letras
-        ? campo(cifra.cifra, 0.98, texto)
-        : campo(cifra.cifra, 0.4, texto, `la cifra (${cifra.cifra}) no coincide con el valor en letras (${letras})`)
+    if (cifra.cifra === letras) valor = campo(cifra.cifra, 0.98, texto)
+    else if (Math.trunc(cifra.cifra) === letras) valor = campo(cifra.cifra, 0.9, texto, "los centavos solo están en la cifra")
+    else valor = campo(cifra.cifra, 0.4, texto, `la cifra (${cifra.cifra}) no coincide con el valor en letras (${letras})`)
   } else if (cifra?.cifra !== null && cifra?.cifra !== undefined) {
     valor = campo(cifra.cifra, 0.85, texto, "solo en cifras, sin el valor en letras para comprobarlo")
   } else if (letras !== null) {
@@ -653,9 +696,16 @@ function extraerValor(textoValor: string | null, documento: string, pais: Pais |
   } else {
     valor = vacio("la cláusula de valor no trae un monto legible")
   }
+  if (valor.valor !== null && VALOR_PERIODICO.test(normalizar(texto))) {
+    valor = campo(valor.valor, 0.5, texto, NOTA_PERIODICO)
+  } else if (valor.valor !== null && VALOR_VARIABLE.test(normalizar(texto))) {
+    valor = campo(valor.valor, Math.min(valor.confianza, 0.6), texto, "es un tope o un valor por consumo, no un valor fijo; confirmar si se registra el tope o 0 (indeterminado)")
+  }
   let moneda: Campo<Moneda>
-  const codigo = cifra?.moneda ?? null
+  const soloSigno = Boolean(cifra?.signo) && !cifra?.moneda && !monedaLetras && (pais === "CO" || pais === null)
+  const codigo = cifra?.moneda ?? (soloSigno ? "COP" : null)
   if (codigo && monedaLetras && codigo !== monedaLetras) moneda = campo(codigo, 0.4, texto, `el código dice ${codigo} y las letras ${monedaLetras}`)
+  else if (codigo && soloSigno) moneda = campo(codigo, 0.8, texto, "solo el signo $, sin código; en Colombia son pesos")
   else if (codigo) moneda = campo(codigo, monedaLetras ? 0.98 : 0.9, texto)
   else if (monedaLetras) moneda = campo(monedaLetras, 0.8, texto, "solo por el nombre de la moneda en letras")
   else moneda = vacio("no se encontró la moneda")
@@ -675,10 +725,22 @@ function fechaDeFirma(texto: string): { fecha: string; exacta: boolean; evidenci
   return { fecha: iso(Number(soloMes[2]), mes, 1), exacta: false, evidencia: soloMes[0] }
 }
 
+/** Una fecha de inicio que no es anterior a la final indica que se leyó mal alguna de las dos. */
+function coherente(plazo: Plazo): Plazo {
+  const { inicio, fin } = plazo
+  if (!inicio.valor || !fin.valor || inicio.valor < fin.valor) return plazo
+  const nota = `la fecha de inicio (${inicio.valor}) no es anterior a la final (${fin.valor}); revisar el plazo`
+  return { inicio: { ...inicio, confianza: 0.3, nota }, fin: { ...fin, confianza: 0.3, nota } }
+}
+
 function extraerPlazo(textoPlazo: string | null, documento: string): Plazo {
+  return coherente(leerPlazo(textoPlazo, documento))
+}
+
+function leerPlazo(textoPlazo: string | null, documento: string): Plazo {
   if (!textoPlazo) return { inicio: vacio("no hay cláusula de plazo"), fin: vacio("no hay cláusula de plazo") }
   const texto = textoPlazo.replace(/\s+/g, " ").trim()
-  const desde = fechaDespuesDe(texto, /\bdesde\b|a partir del?\s+\w+\s*\(/i)
+  const desde = fechaDespuesDe(texto, /\bdesde\b|a partir del?\b|contad[oa]s? del?\b/i)
   const hasta = fechaDespuesDe(texto, /\bhasta\b/i)
   const meses = Number(texto.match(/\((\d{1,3})\)\s+meses|\b(\d{1,3})\s+meses/i)?.slice(1).find(Boolean) ?? Number.NaN)
   const prorroga = /prorrogab/i.test(texto) ? "; se prorroga automáticamente" : ""
@@ -704,6 +766,9 @@ function extraerPlazo(textoPlazo: string | null, documento: string): Plazo {
       inicio: campo(firma.fecha, 0.4, firma.evidencia, nota),
       fin: campo(fin, 0.4, texto, `${meses} meses desde una firma sin día${prorroga}; confirmar`),
     }
+  }
+  if (desde && Number.isFinite(meses)) {
+    return { inicio: campo(desde.fecha, 0.9, texto), fin: campo(finDePlazo(desde.fecha, meses), 0.85, texto, `${meses} meses desde el inicio${prorroga}`) }
   }
   if (desde) return { inicio: campo(desde.fecha, 0.9, texto), fin: vacio("no se encontró la fecha final") }
   return { inicio: vacio("no se encontraron fechas en la cláusula de plazo"), fin: vacio("no se encontraron fechas en la cláusula de plazo") }
@@ -741,6 +806,10 @@ function extraerPoliza(lista: Clausula[], documento: string, correo: Correo): Po
     if (segunCorreo === true) return { requiere: campo(true, 0.5, correo.cuerpo, "el correo dice que requiere póliza pero el contrato no la menciona"), tipos: vacio() }
     return { requiere: campo(false, segunCorreo === false ? 0.95 : 0.85, null, "el contrato no menciona pólizas ni garantías"), tipos: campo("", 0.9, null) }
   }
+  const negada = /\bno (?:se )?(?:exigir|requerir|requiere|exige|debera constituir|habra lugar)|\bsin (?:garantias|polizas?)\b|\bexento de (?:garantias|polizas?)/
+  if (negada.test(normalizar(texto))) {
+    return { requiere: campo(false, segunCorreo === true ? 0.5 : 0.9, texto, "el contrato dice expresamente que no exige pólizas"), tipos: campo("", 0.9, texto) }
+  }
   const tipos = tiposDePoliza(texto)
   const condicional = /para cada orden|cuyo valor supere|en caso de que|si el valor/i.test(texto)
   if (condicional) {
@@ -757,6 +826,22 @@ function extraerPoliza(lista: Clausula[], documento: string, correo: Correo): Po
 function resolverRemitente(correo: Correo, comerciales: Comercial[]): Remitente {
   const conocido = comerciales.find((comercial) => normalizar(comercial.email) === normalizar(correo.de))
   return { email: correo.de, nombre: conocido?.nombre ?? null, registrado: conocido !== undefined }
+}
+
+/** Meses completos entre el inicio y el día siguiente al fin (1 de agosto a 31 de julio son 12). */
+function mesesDelPlazo(inicio: string, fin: string): number | null {
+  for (let meses = 1; meses <= 120; meses++) if (finDePlazo(inicio, meses) === fin) return meses
+  return null
+}
+
+/** Con un valor mensual y el plazo, se propone el total (mensual × meses); sigue en revisión. */
+function totalDeValorMensual(valor: Valor, plazo: Plazo): Partial<Campos> {
+  if (valor.valor.nota !== NOTA_PERIODICO || valor.valor.valor === null || !plazo.inicio.valor || !plazo.fin.valor) return {}
+  const meses = mesesDelPlazo(plazo.inicio.valor, plazo.fin.valor)
+  if (meses === null) return {}
+  const mensual = valor.valor.valor
+  const nota = `${NOTA_PERIODICO}: se propone ${mensual} × ${meses} meses del plazo = ${mensual * meses}; confirmar`
+  return { valor: campo(mensual * meses, 0.6, valor.valor.evidencia, nota) }
 }
 
 /** Extracción de un contrato o contrato marco completo. */
@@ -779,6 +864,7 @@ function extraerContrato(texto: string, tipo: TipoDocumento, correo: Correo): Ca
     fecha_fin: plazo.fin,
     requiere_poliza: poliza.requiere,
     tipo_poliza: poliza.tipos,
+    ...totalDeValorMensual(valor, plazo),
   }
 }
 
@@ -798,10 +884,11 @@ function extraerOtrosi(texto: string, correo: Correo): { campos: Campos; otrosi:
   if (plazo?.fin.valor) modifica.push("fecha_fin")
   const normal = normalizar(texto)
   const ampliaPolizas = /(garantias|polizas?)[^.]*ampliar/.test(normal) && modifica.length > 0
+  const adiciona = /adicion(?:ar|a)?\s+(?:el valor|en|la suma)/.test(normal)
   const tipos = tiposDePoliza(texto.match(/garant[ií]as[^.]*\./i)?.[0] ?? "")
-  const numero = texto.split("\n")[0]?.match(/OTROS[IÍ]\s+No\.\s*(\d+)/i)?.[1] ?? null
+  const numero = texto.split("\n")[0]?.match(/(?:OTROS[IÍ]|MODIFICACI[ÓO]N|ADICI[ÓO]N|PR[ÓO]RROGA|ENMIENDA)\s+(?:No\.?|N[°º]\.?|Nro\.?)\s*(\d+)/i)?.[1] ?? null
   return {
-    otrosi: { numero, modifica, amplia_polizas: ampliaPolizas },
+    otrosi: { numero, modifica, amplia_polizas: ampliaPolizas, adiciona_valor: adiciona },
     campos: {
       id_contrato: extraerId(texto, "otrosi", correo),
       cliente: contraparte.cliente,
@@ -1040,9 +1127,16 @@ function estadoPolizaNuevo(requiere: boolean | null): EstadoPoliza {
 
 type Coincidencia = { fila: Fila; por: "id" | "objeto"; similitud: number | null }
 
+/** «CT 2026 012», «ct-2026-012» y «CT-2026-012» son el mismo número. */
+function mismoId(a: string, b: string): boolean {
+  const limpio = (texto: string) => texto.toUpperCase().replace(/[^A-Z0-9]/g, "")
+  return limpio(a) === limpio(b)
+}
+
 function buscarEnMaestro(maestro: Fila[], valores: Valores): Coincidencia | null {
   if (valores.id_contrato) {
-    const fila = maestro.find((candidata) => candidata.id_contrato === valores.id_contrato)
+    const id = valores.id_contrato
+    const fila = maestro.find((candidata) => mismoId(candidata.id_contrato, id))
     if (fila) return { fila, por: "id", similitud: null }
   }
   if (!valores.nit_cliente || !valores.objeto) return null
@@ -1060,7 +1154,7 @@ function filaCon(valores: Valores, base: Fila | null, extra: { comercial: string
   const elegir = (columna: Columna, nuevo: string | null) => (nuevo === null ? anterior[columna] : nuevo)
   const requiere = valores.requiere_poliza
   return {
-    id_contrato: elegir("id_contrato", valores.id_contrato),
+    id_contrato: base ? anterior.id_contrato : elegir("id_contrato", valores.id_contrato),
     cliente: elegir("cliente", valores.cliente),
     nit_cliente: elegir("nit_cliente", valores.nit_cliente),
     pais: elegir("pais", valores.pais),
@@ -1170,6 +1264,7 @@ function rechazo(motivo: string, remitente: Remitente | null): Validacion {
     detalle_revision: [],
     diferencias: [],
     registro: null,
+    valores: null,
     comercial: remitente,
     avisos: [],
   }
@@ -1214,6 +1309,7 @@ function clasificar(documento: Documento, maestro: Fila[], enviados: z.infer<typ
       detalle_revision: detalle,
       diferencias: [],
       registro: filaCon(valores, null, extra),
+      valores,
       comercial: extraccion.remitente,
       avisos,
     }
@@ -1234,6 +1330,7 @@ function clasificar(documento: Documento, maestro: Fila[], enviados: z.infer<typ
       detalle_revision: [],
       diferencias: [],
       registro: null,
+      valores,
       comercial: extraccion.remitente,
       avisos,
     }
@@ -1252,6 +1349,12 @@ function clasificar(documento: Documento, maestro: Fila[], enviados: z.infer<typ
   if (coincidencia.por === "objeto") {
     revision.push({ campo: "id_contrato", motivo: `coincide por NIT y objeto (similitud ${coincidencia.similitud}) con ${fila.id_contrato}, pero el número es otro` })
   }
+  if (extraccion.otrosi && extraccion.otrosi.modifica.length === 0) {
+    revision.push({ campo: "otrosi", motivo: "no se reconoció qué cláusula modifica el otrosí; revisar el documento y dar los valores nuevos" })
+  }
+  if (extraccion.otrosi?.adiciona_valor) {
+    revision.push({ campo: "valor", motivo: `el otrosí adiciona un monto: el valor nuevo debe ser el anterior (${fila.valor} ${fila.moneda}) más la adición; confirmar el total` })
+  }
   if (extraccion.otrosi && valores.moneda && valores.moneda !== fila.moneda) {
     revision.push({ campo: "moneda", motivo: `el otrosí está en ${valores.moneda} y el contrato en ${fila.moneda}` })
   }
@@ -1265,6 +1368,7 @@ function clasificar(documento: Documento, maestro: Fila[], enviados: z.infer<typ
     detalle_revision: detalle,
     diferencias,
     registro,
+    valores,
     comercial: extraccion.remitente,
     avisos,
   }
@@ -1454,7 +1558,7 @@ async function validarParaAgente(ctx: Contexto, args: ArgsValidar) {
     ...validacion,
     ...(procesado ? { ya_procesado: procesado } : {}),
     // El backend usa esta marca para saber que el siguiente «confirmo» de la persona aplica a este mensaje.
-    ...(pendiente ? { confirmacion_pendiente: { mensaje_id: args.mensaje_id, campos: validacion.requiere_revision } } : {}),
+    ...(pendiente ? { confirmacion_pendiente: { mensaje_id: args.mensaje_id, campos: validacion.requiere_revision, valores: validacion.valores } } : {}),
     resumen: resumirValidacion(args.mensaje_id, validacion),
   })
 }
@@ -1477,8 +1581,18 @@ const ArgsRegistrar = {
     .optional()
     .describe("true solo si la analista confirmó en su último mensaje los campos en revisión; el sistema lo verifica."),
   hoy: FechaSchema.optional().describe("Fecha de registro AAAA-MM-DD; por defecto, hoy en Bogotá"),
+  valores_confirmados: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe("Lo fija el sistema con los valores que aprobó la analista; no lo escribas."),
 }
-type ArgsRegistrar = ArgsValidar & { confirmado?: boolean; hoy?: string }
+type ArgsRegistrar = ArgsValidar & { confirmado?: boolean; hoy?: string; valores_confirmados?: Record<string, unknown> }
+
+/** Campos en los que los valores a registrar no son los que aprobó la analista. */
+function distintosDeLoAprobado(valores: Valores | null, aprobados: Record<string, unknown>): string[] {
+  if (!valores) return []
+  return (Object.keys(valores) as NombreCampo[]).filter((campo) => JSON.stringify(valores[campo]) !== JSON.stringify(aprobados[campo] ?? null))
+}
 
 function asignarId(maestro: Fila[], fila: Fila): string {
   const anio = (fila.fecha_inicio || fila.fecha_registro).slice(0, 4)
@@ -1535,6 +1649,11 @@ async function registrarMensaje(ctx: Contexto, args: ArgsRegistrar): Promise<Res
   if (validacion.requiere_revision.length > 0 && args.confirmado !== true) {
     return fallo(`${ERROR_REVISION}: ${validacion.detalle_revision.map((item) => `${item.campo} (${item.motivo})`).join("; ")}`)
   }
+  // Con valores aprobados (los fija el backend), la confirmación solo vale para esos valores exactos.
+  const noAprobados = args.valores_confirmados ? distintosDeLoAprobado(validacion.valores, args.valores_confirmados) : []
+  if (validacion.requiere_revision.length > 0 && noAprobados.length > 0) {
+    return fallo(`${ERROR_REVISION}: ${noAprobados.join(", ")} no tiene el valor que confirmó la analista; muéstrale los valores con contratos_validar y vuelve a preguntar`)
+  }
   const registro = validacion.registro
   if (!registro) return fallo("No se pudo armar la fila del maestro.")
   const sinDato = faltantes(registro)
@@ -1548,7 +1667,7 @@ async function registrarMensaje(ctx: Contexto, args: ArgsRegistrar): Promise<Res
   if (clasificacion === "nuevo") {
     const fila: Fila = { ...registro, fecha_registro: hoy }
     if (!fila.id_contrato) fila.id_contrato = asignarId(maestro.data, fila)
-    if (maestro.data.some((otra) => otra.id_contrato === fila.id_contrato)) return fallo(`Ya existe el contrato ${fila.id_contrato} en el maestro.`)
+    if (maestro.data.some((otra) => mismoId(otra.id_contrato, fila.id_contrato))) return fallo(`Ya existe el contrato ${fila.id_contrato} en el maestro.`)
     fila.ruta_sharepoint = await archivar(ctx, documento, fila, "")
     await writeFile(rutaMaestro(ctx), escribirCsv([...maestro.data, fila]), "utf8")
     await agregarHistorial(ctx, { id_contrato: fila.id_contrato, accion: "alta", cambios: fila, mensaje_id: args.mensaje_id, campos_confirmados: confirmados, campos_corregidos: corregidos })
